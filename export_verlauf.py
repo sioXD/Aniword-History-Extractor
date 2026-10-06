@@ -11,6 +11,12 @@ Aufruf:
     python export_verlauf.py --max-pages 3  # nur die ersten 3 Seiten crawlen
     python export_verlauf.py --delay 1.5    # Pause zwischen den Anfragen (Sekunden)
     python export_verlauf.py --browser-login  # im echten Browser einloggen (Captcha-fähig)
+    python export_verlauf.py --farbe aus      # farblose Ausgabe erzwingen
+
+Farben:
+    Erfolg=grün, Info=cyan, Warnung=gelb, Fehler=rot.
+    Farben lassen sich oben im Skript (FARBEN-Wörterbuch) ändern.
+    Default: nur im Terminal bunt, automatisch aus bei umgeleiteter Ausgabe.
 """
 
 from __future__ import annotations
@@ -47,6 +53,53 @@ HEADERS = {
     "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
 }
 
+# --------------------------------------------------------------------------
+# Farben (nur Konsole – Farben hier ganz einfach ändern)
+# --------------------------------------------------------------------------
+
+try:
+    import colorama
+    colorama.init()          # aktiviert ANSI-Farben auch in der Windows-cmd-Konsole
+    _FARBEN_VERFUEGBAR = True
+except ImportError:
+    _FARBEN_VERFUEGBAR = False
+
+_FARB_PALETTE = {            # Name -> ANSI-Farbcode (eigene Farben ergänzbar)
+    "gruen":   "32",
+    "cyan":    "36",
+    "gelb":    "33",
+    "rot":     "31",
+    "magenta": "35",
+    "blau":    "34",
+    "weiss":   "37",
+}
+
+# Kategorie -> Farbe: hier z.B. "gruen" durch "magenta" ersetzen, um
+# die Farbe aller Erfolgsmeldungen zu ändern:
+FARBEN = {
+    "ok":     "gruen",
+    "info":   "cyan",
+    "warn":   "gelb",
+    "fehler": "rot",
+}
+
+_farbe_aktiv = True
+
+
+def col(kategorie: str, text: str) -> str:
+    """Umschließt text mit ANSI-Farbcode, sofern Farben aktiv und verfügbar sind."""
+    if not _farbe_aktiv or not _FARBEN_VERFUEGBAR:
+        return text
+    code = _FARB_PALETTE.get(FARBEN.get(kategorie, ""))
+    if not code:
+        return text
+    return f"\x1b[{code}m{text}\x1b[0m"
+
+
+def farbe_setzen(an: bool) -> None:
+    global _farbe_aktiv
+    _farbe_aktiv = bool(an)
+
 
 @dataclass
 class Eintrag:
@@ -79,14 +132,14 @@ def get(client: httpx.Client, url: str, tries: int = 3) -> httpx.Response:
             resp.raise_for_status()
             # Leerer Body kommt bei AniWorld vor (z.B. ohne Login) -> einmal retry
             if resp.text.strip() == "" and attempt < tries - 1:
-                print(f"  Leere Antwort bei {url} - Wiederholung …")
+                print(f"  {col('warn', 'Leere Antwort')} bei {url} – Wiederholung …")
                 time.sleep(1.5 * (attempt + 1))
                 continue
             return resp
         except httpx.HTTPError as exc:
             last_exc = exc
             if attempt < tries - 1:
-                print(f"  Fehler bei {url} ({type(exc).__name__}) - Wiederholung …")
+                print(f"  {col('warn', f'Fehler bei {url} ({type(exc).__name__})')} – Wiederholung …")
             time.sleep(1.5 * (attempt + 1))
     raise RuntimeError(f"GET {url} fehlgeschlagen: {last_exc}")
 
@@ -113,7 +166,7 @@ def login(client: httpx.Client, email: str, password: str) -> None:
     get(client, f"{BASE}/login")
 
     # 2. Formular absenden (entspricht exakt den Feldern der HTML-Seite)
-    print("Melde an …")
+    print(col("info", "Melde an …"))
     resp = client.post(
         f"{BASE}/login",
         data={"email": email, "password": password, "autoLogin": "on"},
@@ -136,7 +189,7 @@ def login(client: httpx.Client, email: str, password: str) -> None:
         )
     if probe.text.strip() == "":
         raise RuntimeError("Verlaufsseite ist leer - trotz vermutetem Login.")
-    print("Login erfolgreich.")
+    print(col("ok", "Login erfolgreich."))
 
 
 # --------------------------------------------------------------------------
@@ -227,10 +280,10 @@ def crawl(client: httpx.Client, delay: float, max_pages: int | None) -> list[Ein
 
     erste = get(client, WATCHED_URL.format(page=1))
     seiten_gesamt = max_page_from_html(erste.text) or 1
-    print(f"Pagination: Seite 1 von {seiten_gesamt}")
+    print(col("info", f"Pagination: Seite 1 von {seiten_gesamt}"))
     if max_pages:
         seiten_gesamt = min(seiten_gesamt, max_pages)
-        print(f"max-pages gesetzt -> crawle {seiten_gesamt} Seiten")
+        print(col("info", f"max-pages gesetzt -> crawle {seiten_gesamt} Seiten"))
 
     for seite in range(1, seiten_gesamt + 1):
         html = erste.text if seite == 1 else get(client, WATCHED_URL.format(page=seite)).text
@@ -245,7 +298,7 @@ def crawl(client: httpx.Client, delay: float, max_pages: int | None) -> list[Ein
         print(f"  Seite {seite}/{seiten_gesamt}: {neu} Einträge (gesamt {len(alle)})")
 
         if neu == 0 and seite < seiten_gesamt:
-            print("  Seite ohne neue Einträge -> abbrechen")
+            print(f"  {col('warn', 'Seite ohne neue Einträge')} -> abbrechen")
             break
         if seite < seiten_gesamt:
             time.sleep(delay)
@@ -311,13 +364,13 @@ def export(eintraege: list[Eintrag]) -> None:
         writer.writerows(zusammenfassung)
 
     serien = {e.serie for e in eintraege}
-    print(f"\nExport fertig:")
-    print(f"  {len(eintraege)} Episoden-Einträge, {len(serien)} verschiedene Serien")
-    print(f"  {csv_pfad}")
-    print(f"  {json_pfad}")
-    print(f"  {sum_pfad}")
+    print(col("ok", "\nExport fertig:"))
+    print(col("info", f"  {len(eintraege)} Episoden-Einträge, {len(serien)} verschiedene Serien"))
+    print(col("info", f"  {csv_pfad}"))
+    print(col("info", f"  {json_pfad}"))
+    print(col("info", f"  {sum_pfad}"))
 
-    print(f"\nZusammenfassung ({len(zusammenfassung)} Serien):")
+    print(col("info", f"\nZusammenfassung ({len(zusammenfassung)} Serien):"))
     for z in zusammenfassung:
         print(
             f"  {z['episoden']:>4}x  {z['serie']:<55} "
@@ -355,35 +408,35 @@ def zugangsdaten() -> tuple[str, str]:
     """Liest .env; fehlen Daten, werden sie abgefragt und gespeichert."""
     email, password = env_laden()
     if email and password:
-        print(f"Zugangsdaten aus .env geladen ({email}).")
+        print(col("info", f"Zugangsdaten aus .env geladen ({email})."))
         return email, password
 
-    print("Keine .env gefunden - Zugangsdaten werden abgefragt und gespeichert.")
+    print(col("info", "Keine .env gefunden - Zugangsdaten werden abgefragt und gespeichert."))
     try:
         email = input(f"E-Mail{' [' + email + ']' if email else ''}: ").strip() or email
         password = getpass.getpass("Passwort: ")
     except (EOFError, KeyboardInterrupt):
-        sys.exit("\nAbbruch.")
+        sys.exit(col("fehler", "\nAbbruch."))
     if not email or not password:
-        sys.exit("\nAbbruch: E-Mail und Passwort werden benötigt.")
+        sys.exit(col("fehler", "\nAbbruch: E-Mail und Passwort werden benötigt."))
     env_schreiben(email, password)
-    print(f"Gespeichert in {ENV_PFAD} (Klartext! .env ist in .gitignore).")
+    print(col("warn", f"Gespeichert in {ENV_PFAD} (Klartext! .env ist in .gitignore)."))
     return email, password
 
 
 def login_abfragen(email: str) -> tuple[str, str]:
     """Fragt nach neuen Zugangsdaten nach einem fehlgeschlagenen Login."""
-    print("\nNeue Zugangsdaten eingeben - Enter bei der E-Mail behält den Wert.")
-    print("(Leeres Passwort oder Strg+C bricht ab.)")
+    print(col("info", "\nNeue Zugangsdaten eingeben - Enter bei der E-Mail behält den Wert."))
+    print(col("info", "(Leeres Passwort oder Strg+C bricht ab.)"))
     try:
         email_neu = input(f"E-Mail [{email}]: ").strip() or email
         password_neu = getpass.getpass("Passwort: ")
     except (EOFError, KeyboardInterrupt):
-        sys.exit("\nAbbruch.")
+        sys.exit(col("fehler", "\nAbbruch."))
     if not password_neu:
-        sys.exit("\nAbbruch: kein Passwort eingegeben.")
+        sys.exit(col("fehler", "\nAbbruch: kein Passwort eingegeben."))
     env_schreiben(email_neu, password_neu)
-    print(f"Aktualisiert in {ENV_PFAD}.")
+    print(col("info", f"Aktualisiert in {ENV_PFAD}."))
     return email_neu, password_neu
 
 
@@ -463,7 +516,7 @@ def _captcha_fokussieren(page) -> bool:
         if inp:
             try:
                 inp.focus()
-                print("  Captcha-Feld fokussiert - Code eintippen und absenden.")
+                print(col("info", "  Captcha-Feld fokussiert - Code eintippen und absenden."))
                 return True
             except Exception:  # noqa: BLE001
                 pass
@@ -475,7 +528,7 @@ def _captcha_fokussieren(page) -> bool:
     if box:
         try:
             box.click()
-            print("  Captcha-Checkbox angeklickt - ggf. Bildaufgabe im Fenster lösen.")
+            print(col("info", "  Captcha-Checkbox angeklickt - ggf. Bildaufgabe im Fenster lösen."))
             return True
         except Exception:  # noqa: BLE001
             pass
@@ -502,15 +555,15 @@ def browser_login() -> None:
         email, password = env_laden()
         if email and password:
             if _login_formular_ausfuellen(page, email, password):
-                print(f"\nBrowser geöffnet - Zugangsdaten aus .env vorausgefüllt ({email}).")
-                print("Falls ein Captcha erscheint, bekommt das Feld automatisch den Fokus.")
+                print(col("info", f"\nBrowser geöffnet - Zugangsdaten aus .env vorausgefüllt ({email})."))
+                print(col("info", "Falls ein Captcha erscheint, bekommt das Feld automatisch den Fokus."))
             else:
-                print("\nBrowser geöffnet - kein Login-Formular gefunden. Bitte manuell einloggen.")
+                print(col("info", "\nBrowser geöffnet - kein Login-Formular gefunden. Bitte manuell einloggen."))
         else:
-            print("\nBrowser geöffnet - keine Zugangsdaten in .env gefunden.")
-            print("Bitte manuell einloggen.")
+            print(col("info", "\nBrowser geöffnet - keine Zugangsdaten in .env gefunden."))
+            print(col("info", "Bitte manuell einloggen."))
 
-        print("Das Skript wartet, bis du eingeloggt bist …")
+        print(col("info", "Das Skript wartet, bis du eingeloggt bist …"))
         ende = time.monotonic() + 300
         eingeloggt = False
         while time.monotonic() < ende:
@@ -531,8 +584,8 @@ def browser_login() -> None:
         browser.close()
 
     if not eingeloggt:
-        sys.exit("Login im Browser nicht abgeschlossen (nach 5 Minuten).")
-    print(f"Session gespeichert: {SESSION_PFAD}")
+        sys.exit(col("fehler", "Login im Browser nicht abgeschlossen (nach 5 Minuten)."))
+    print(col("ok", f"Session gespeichert: {SESSION_PFAD}"))
 
 
 def crawl_browser(delay: float, max_pages: int | None) -> list[Eintrag]:
@@ -551,7 +604,7 @@ def crawl_browser(delay: float, max_pages: int | None) -> list[Eintrag]:
         seiten_gesamt = max_page_from_html(page.content()) or 1
         if max_pages:
             seiten_gesamt = min(seiten_gesamt, max_pages)
-        print(f"Pagination: Seite 1 von {seiten_gesamt} (im Browser)")
+        print(col("info", f"Pagination: Seite 1 von {seiten_gesamt} (im Browser)"))
 
         for seite in range(1, seiten_gesamt + 1):
             if seite == 1:
@@ -568,7 +621,7 @@ def crawl_browser(delay: float, max_pages: int | None) -> list[Eintrag]:
                 neu += 1
             print(f"  Seite {seite}/{seiten_gesamt}: {neu} Einträge (gesamt {len(alle)})")
             if neu == 0 and seite < seiten_gesamt:
-                print("  Seite ohne neue Einträge -> abbrechen")
+                print(f"  {col('warn', 'Seite ohne neue Einträge')} -> abbrechen")
                 break
             if seite < seiten_gesamt:
                 time.sleep(delay)
@@ -592,12 +645,12 @@ def pruefe_erreichbarkeit(timeout: float = 10.0) -> bool:
             r.raise_for_status()
         return True
     except (httpx.TimeoutException, httpx.ConnectError, httpx.TransportError) as exc:
-        print(f"\nWarnung: {BASE} nicht erreichbar (Timeout nach {timeout:.0f}s).")
-        print(f"Mögliche Ursache: Firewall/VPN blockiert den Zugriff."
-              f" | {_proxy_hinweis()} | {type(exc).__name__}: {exc}")
+        print(col("warn", f"\nWarnung: {BASE} nicht erreichbar (Timeout nach {timeout:.0f}s)."))
+        print(col("warn", f"Mögliche Ursache: Firewall/VPN blockiert den Zugriff."
+                          f" | {_proxy_hinweis()} | {type(exc).__name__}: {exc}"))
         return False
     except httpx.HTTPStatusError as exc:
-        print(f"\nWarnung: {BASE} antwortet mit HTTP-Status {exc.response.status_code}.")
+        print(col("warn", f"\nWarnung: {BASE} antwortet mit HTTP-Status {exc.response.status_code}."))
         return False
 
 
@@ -609,13 +662,13 @@ def form_login(client: httpx.Client) -> None:
             login(client, email, password)
             return
         except CaptchaFehler as exc:
-            print(f"\nCaptcha erforderlich: {exc}")
+            print(col("fehler", f"\nCaptcha erforderlich: {exc}"))
             print("\n")
-            print("Versuche: `python export_verlauf.py --browser-login`")
+            print(col("info", "Versuche: `python export_verlauf.py --browser-login`"))
             print("\n")
             sys.exit(1)
         except RuntimeError as exc:
-            print(f"\nLogin fehlgeschlagen: {exc}")
+            print(col("fehler", f"\nLogin fehlgeschlagen: {exc}"))
             email, password = login_abfragen(email)
 
 
@@ -629,11 +682,15 @@ def main() -> None:
                         help="Pause zwischen Seiten in Sekunden (Default: 0.7)")
     parser.add_argument("--browser-login", action="store_true",
                         help="Im echten Browser einloggen (Captcha-fähig) und Session speichern")
+    parser.add_argument("--farbe", choices=["an", "aus"], default="auto",
+                        help="Farbige Ausgabe an/aus (Default: auto – nur im Terminal)")
     args = parser.parse_args()
 
-    # Erreichbarkeit früh prüfen - nur bei Problemen erscheint eine kleine Warnung
+    farbe_setzen({"auto": sys.stdout.isatty(), "an": True, "aus": False}[args.farbe])
+
+    # Erreichbarkeit früh prüfen – nur bei Problemen erscheint eine kleine Warnung
     if not pruefe_erreichbarkeit():
-        sys.exit("Abbruch: AniWorld nicht erreichbar.")
+        sys.exit(col("fehler", "Abbruch: AniWorld nicht erreichbar."))
 
     browser_modus = False
 
@@ -643,17 +700,17 @@ def main() -> None:
             browser_login()
             session_einlesen(client)
             if session_gueltig(client):
-                print("Browser-Session übernommen - Crawl läuft über httpx.")
+                print(col("ok", "Browser-Session übernommen – Crawl läuft über httpx."))
             else:
-                print("httpx kann die Browser-Session nicht nutzen - Crawl läuft im Browser.")
+                print(col("info", "httpx kann die Browser-Session nicht nutzen – Crawl läuft im Browser."))
                 browser_modus = True
         elif SESSION_PFAD.exists():
             # 2) Gespeicherte Session wiederverwenden
             session_einlesen(client)
             if session_gueltig(client):
-                print(f"Gültige Session aus {SESSION_PFAD} übernommen.")
+                print(col("ok", f"Gültige Session aus {SESSION_PFAD} übernommen."))
             else:
-                print("Gespeicherte Session ungültig - versuche Browser-Crawl.")
+                print(col("warn", "Gespeicherte Session ungültig – versuche Browser-Crawl."))
                 browser_modus = True
         else:
             # 3) Formular-Login (Primärweg)
@@ -675,8 +732,8 @@ def main() -> None:
             DEBUG_DIR.mkdir(parents=True, exist_ok=True)
             pfad = DEBUG_DIR / "watched_seite1.html"
             pfad.write_text(html, encoding="utf-8")
-            print(f"Seite 1 gespeichert: {pfad} ({len(html)} Zeichen)")
-            print(f"Pagination deutet auf max. Seite: {max_page_from_html(html)}")
+            print(col("info", f"Seite 1 gespeichert: {pfad} ({len(html)} Zeichen)"))
+            print(col("info", f"Pagination deutet auf max. Seite: {max_page_from_html(html)}"))
             return
 
         try:
@@ -686,13 +743,13 @@ def main() -> None:
                 eintraege = crawl(client, delay=args.delay, max_pages=args.max_pages)
         except RuntimeError as exc:
             sys.exit(
-                f"Fehler beim Crawlen: {exc}\n"
+                col("fehler", "Fehler beim Crawlen: " + str(exc)) + "\n"
                 "Falls eine Firewall den Zugriff blockiert, prüfe Firewall/VPN."
             )
 
     if not eintraege:
-        sys.exit("Keine Einträge gefunden - Struktur prüfen: "
-                 "python export_verlauf.py --inspect")
+        sys.exit(col("warn", "Keine Einträge gefunden - Struktur prüfen: "
+                             "python export_verlauf.py --inspect"))
     export(eintraege)
 
 

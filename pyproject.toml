@@ -8,6 +8,7 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
     "python-dotenv>=0.21",
+    "colorama>=0.4.6",
 ]
 
 # Reines Skript-Projekt (kein installierbares Paket) -> uv installiert nur die
