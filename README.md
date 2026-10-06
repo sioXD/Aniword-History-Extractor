@@ -27,6 +27,22 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+<details>
+<summary>Alternative: uv</summary>
+
+### UV - Platform unabhängig 
+
+> install uv here: <https://docs.astral.sh/uv/getting-started/installation/s>
+
+```properties
+uv sync
+uv run export_verlauf.py
+```
+
+</details>
+
+
+
 ## Usage
 
 ```properties
