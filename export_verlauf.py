@@ -10,6 +10,7 @@ Aufruf:
     python export_verlauf.py --inspect      # nur Seite 1 als HTML speichern (Struktur-Analyse)
     python export_verlauf.py --max-pages 3  # nur die ersten 3 Seiten crawlen
     python export_verlauf.py --delay 1.5    # Pause zwischen den Anfragen (Sekunden)
+    python export_verlauf.py --browser-login  # im echten Browser einloggen (Captcha-fähig)
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import argparse
 import csv
 import getpass
 import json
+import os
 import re
 import sys
 import time
@@ -64,7 +66,8 @@ class Eintrag:
 # --------------------------------------------------------------------------
 
 def make_client() -> httpx.Client:
-    return httpx.Client(headers=HEADERS, follow_redirects=True, timeout=20.0)
+    # bewusst kurzer, fixer Timeout - wird nicht erhöht
+    return httpx.Client(headers=HEADERS, follow_redirects=True, timeout=10.0)
 
 
 def get(client: httpx.Client, url: str, tries: int = 3) -> httpx.Response:
@@ -76,14 +79,14 @@ def get(client: httpx.Client, url: str, tries: int = 3) -> httpx.Response:
             resp.raise_for_status()
             # Leerer Body kommt bei AniWorld vor (z.B. ohne Login) -> einmal retry
             if resp.text.strip() == "" and attempt < tries - 1:
-                print(f"  Leere Antwort bei {url} – Wiederholung …")
+                print(f"  Leere Antwort bei {url} - Wiederholung …")
                 time.sleep(1.5 * (attempt + 1))
                 continue
             return resp
         except httpx.HTTPError as exc:
             last_exc = exc
             if attempt < tries - 1:
-                print(f"  Fehler bei {url} ({type(exc).__name__}) – Wiederholung …")
+                print(f"  Fehler bei {url} ({type(exc).__name__}) - Wiederholung …")
             time.sleep(1.5 * (attempt + 1))
     raise RuntimeError(f"GET {url} fehlgeschlagen: {last_exc}")
 
@@ -460,7 +463,7 @@ def _captcha_fokussieren(page) -> bool:
         if inp:
             try:
                 inp.focus()
-                print("  Captcha-Feld fokussiert – Code eintippen und absenden.")
+                print("  Captcha-Feld fokussiert - Code eintippen und absenden.")
                 return True
             except Exception:  # noqa: BLE001
                 pass
@@ -472,7 +475,7 @@ def _captcha_fokussieren(page) -> bool:
     if box:
         try:
             box.click()
-            print("  Captcha-Checkbox angeklickt – ggf. Bildaufgabe im Fenster lösen.")
+            print("  Captcha-Checkbox angeklickt - ggf. Bildaufgabe im Fenster lösen.")
             return True
         except Exception:  # noqa: BLE001
             pass
@@ -499,12 +502,12 @@ def browser_login() -> None:
         email, password = env_laden()
         if email and password:
             if _login_formular_ausfuellen(page, email, password):
-                print(f"\nBrowser geöffnet – Zugangsdaten aus .env vorausgefüllt ({email}).")
+                print(f"\nBrowser geöffnet - Zugangsdaten aus .env vorausgefüllt ({email}).")
                 print("Falls ein Captcha erscheint, bekommt das Feld automatisch den Fokus.")
             else:
-                print("\nBrowser geöffnet – kein Login-Formular gefunden. Bitte manuell einloggen.")
+                print("\nBrowser geöffnet - kein Login-Formular gefunden. Bitte manuell einloggen.")
         else:
-            print("\nBrowser geöffnet – keine Zugangsdaten in .env gefunden.")
+            print("\nBrowser geöffnet - keine Zugangsdaten in .env gefunden.")
             print("Bitte manuell einloggen.")
 
         print("Das Skript wartet, bis du eingeloggt bist …")
@@ -574,6 +577,30 @@ def crawl_browser(delay: float, max_pages: int | None) -> list[Eintrag]:
     return alle
 
 
+def _proxy_hinweis() -> str:
+    """Nennt gesetzte Proxy-Umgebungsvariablen (für Fehlerdiagnose)."""
+    genutzt = [k for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+               if os.environ.get(k)]
+    return "Proxy-Variablen: " + (", ".join(genutzt) if genutzt else "keine gesetzt")
+
+
+def pruefe_erreichbarkeit(timeout: float = 10.0) -> bool:
+    """Kurzer Probe-Request; bei Blockade nur eine kleine Hinweiszeile."""
+    try:
+        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=timeout) as probe:
+            r = probe.get(BASE)
+            r.raise_for_status()
+        return True
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.TransportError) as exc:
+        print(f"\nWarnung: {BASE} nicht erreichbar (Timeout nach {timeout:.0f}s).")
+        print(f"Mögliche Ursache: Firewall/VPN blockiert den Zugriff."
+              f" | {_proxy_hinweis()} | {type(exc).__name__}: {exc}")
+        return False
+    except httpx.HTTPStatusError as exc:
+        print(f"\nWarnung: {BASE} antwortet mit HTTP-Status {exc.response.status_code}.")
+        return False
+
+
 def form_login(client: httpx.Client) -> None:
     """Login über das HTML-Formular (mit Wiederholung bei falschen Daten)."""
     email, password = zugangsdaten()
@@ -604,6 +631,10 @@ def main() -> None:
                         help="Im echten Browser einloggen (Captcha-fähig) und Session speichern")
     args = parser.parse_args()
 
+    # Erreichbarkeit früh prüfen - nur bei Problemen erscheint eine kleine Warnung
+    if not pruefe_erreichbarkeit():
+        sys.exit("Abbruch: AniWorld nicht erreichbar.")
+
     browser_modus = False
 
     with make_client() as client:
@@ -612,9 +643,9 @@ def main() -> None:
             browser_login()
             session_einlesen(client)
             if session_gueltig(client):
-                print("Browser-Session übernommen – Crawl läuft über httpx.")
+                print("Browser-Session übernommen - Crawl läuft über httpx.")
             else:
-                print("httpx kann die Browser-Session nicht nutzen – Crawl läuft im Browser.")
+                print("httpx kann die Browser-Session nicht nutzen - Crawl läuft im Browser.")
                 browser_modus = True
         elif SESSION_PFAD.exists():
             # 2) Gespeicherte Session wiederverwenden
@@ -622,7 +653,7 @@ def main() -> None:
             if session_gueltig(client):
                 print(f"Gültige Session aus {SESSION_PFAD} übernommen.")
             else:
-                print("Gespeicherte Session ungültig – versuche Browser-Crawl.")
+                print("Gespeicherte Session ungültig - versuche Browser-Crawl.")
                 browser_modus = True
         else:
             # 3) Formular-Login (Primärweg)
@@ -654,7 +685,10 @@ def main() -> None:
             else:
                 eintraege = crawl(client, delay=args.delay, max_pages=args.max_pages)
         except RuntimeError as exc:
-            sys.exit(f"Fehler beim Crawlen: {exc}")
+            sys.exit(
+                f"Fehler beim Crawlen: {exc}\n"
+                "Falls eine Firewall den Zugriff blockiert, prüfe Firewall/VPN."
+            )
 
     if not eintraege:
         sys.exit("Keine Einträge gefunden - Struktur prüfen: "
