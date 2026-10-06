@@ -51,3 +51,12 @@ python export_verlauf.py
 
 - login credentials are stored in `.env` after the first run
 - the Results are stored in the `output/` folder
+
+### Captcha / Login-Probleme 
+
+if you have capcha problems, run the commands below
+
+```properties
+pip install -r requirements-browser.txt   # or: uv sync --extra browser
+python export_verlauf.py --browser-login
+```
